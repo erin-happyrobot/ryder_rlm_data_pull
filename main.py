@@ -121,10 +121,8 @@ async def trigger_job():
     await friday_job()
     return {"message": "Job triggered successfully"}
 
-@api_router.get("/data")
-async def get_data():
-    """Get data from the database and return as flattened DataFrame"""
-
+async def _fetch_and_process_dataframe():
+    """Internal helper function to fetch and process data into a DataFrame"""
     limit = 3000
 
     completed_start_date = datetime.now(eastern_tz) - timedelta(days=7)
@@ -192,80 +190,154 @@ async def get_data():
     print(f"📅 Cutoff date: {cutoff_date}")
     print(f"📅 Date range after filtering: {df_filtered['completed_at'].min()} to {df_filtered['completed_at'].max()}")
     
-    # Convert DataFrame to JSON for API response
-    return {
-        "data": df_filtered.to_dict('records'),
-        "shape": df_filtered.shape,
-        "columns": df_filtered.columns.tolist(),
-        "summary": {
-            "total_records": len(df_filtered),
-            "original_records": len(df),
-            "columns_count": len(df_filtered.columns),
-            "date_range": {
-                "start": df_filtered['completed_at'].min().isoformat() if len(df_filtered) > 0 else None,
-                "end": df_filtered['completed_at'].max().isoformat() if len(df_filtered) > 0 else None
-            }
+    # Print all column names
+    print(f"📋 All column names ({len(df_filtered.columns)} total):")
+    for i, col in enumerate(df_filtered.columns, 1):
+        print(f"  {i:2d}. {col}")
+    
+    return df_filtered
+
+@api_router.get("/data")
+async def get_data():
+    """Get statistics about the data instead of raw records"""
+    
+    # Fetch and process the dataframe
+    try:
+        df_filtered = await _fetch_and_process_dataframe()
+    except Exception as e:
+        return {"error": f"Error fetching data: {str(e)}"}
+    
+    # Calculate statistics
+    days_covered = 0
+    if len(df_filtered) > 0:
+        min_date = df_filtered['completed_at'].min()
+        max_date = df_filtered['completed_at'].max()
+        days_covered = (max_date - min_date).days + 1
+    
+    stats = {
+        "total_records": len(df_filtered),
+        "columns_count": len(df_filtered.columns),
+        "date_range": {
+            "start": df_filtered['completed_at'].min().isoformat() if len(df_filtered) > 0 else None,
+            "end": df_filtered['completed_at'].max().isoformat() if len(df_filtered) > 0 else None,
+            "days_covered": days_covered
         }
+    }
+    
+    # Status breakdown
+    if 'status' in df_filtered.columns:
+        stats["status_breakdown"] = df_filtered['status'].value_counts().to_dict()
+    
+    # Scheduling status breakdown (if available)
+    scheduling_col = "0199978b_1596_7369_b3cd_0d14190e9e93_response_classification"
+    if scheduling_col in df_filtered.columns:
+        scheduling_data = df_filtered[scheduling_col].dropna()
+        stats["scheduling_status"] = {
+            "total_with_status": len(scheduling_data),
+            "breakdown": scheduling_data.value_counts().to_dict()
+        }
+    
+    # Call end stage breakdown (if available)
+    end_call_col = "0198e897_dff8_7049_822d_f10cbc15acb6_response_classification"
+    if end_call_col in df_filtered.columns:
+        end_stage_data = df_filtered[end_call_col].dropna()
+        stats["call_end_stage"] = {
+            "total_with_stage": len(end_stage_data),
+            "breakdown": end_stage_data.value_counts().to_dict()
+        }
+    
+    # Company breakdown (if available)
+    company_col = "01987da1_cab7_777e_932b_9d36e1e5cf8a_company_name"
+    if company_col in df_filtered.columns:
+        company_data = df_filtered[company_col].dropna()
+        stats["companies"] = {
+            "unique_companies": len(company_data.unique()),
+            "total_with_company": len(company_data),
+            "top_companies": company_data.value_counts().head(10).to_dict()
+        }
+    
+    # Client order numbers (if available)
+    order_col = "01978ea3_2dda_70cb_a59a_6bac316e30db_data_orders_0_clientOrderNumber"
+    if order_col in df_filtered.columns:
+        order_data = df_filtered[order_col].dropna()
+        stats["orders"] = {
+            "total_orders": len(order_data),
+            "unique_orders": len(order_data.unique()),
+            "orders_with_duplicates": len(order_data) - len(order_data.unique())
+        }
+    
+    # Calculate average calls per day
+    if len(df_filtered) > 0 and days_covered > 0:
+        stats["average_calls_per_day"] = round(len(df_filtered) / days_covered, 2)
+    else:
+        stats["average_calls_per_day"] = 0
+    
+    # Connected calls breakdown (scheduled vs transferred)
+    end_call_col = "0198e897_dff8_7049_822d_f10cbc15acb6_response_classification"
+    scheduling_col = "0199978b_1596_7369_b3cd_0d14190e9e93_response_classification"
+    
+    if end_call_col in df_filtered.columns and scheduling_col in df_filtered.columns:
+        # Filter out calls that were "call_not_picked_up" (these are not connected)
+        connected_calls = df_filtered[df_filtered[end_call_col].str.contains('call_not_picked_up', case=False, na=False) == False]
+        total_connected = len(connected_calls)
+        
+        if total_connected > 0:
+            # Get counts for each scheduling status
+            status_counts = connected_calls[scheduling_col].value_counts().to_dict()
+            
+            # Categorize into scheduled and transferred
+            scheduled_count = 0
+            transferred_count = 0
+            
+            for status, count in status_counts.items():
+                status_str = str(status).lower()
+                if 'scheduled' in status_str and 'not' not in status_str:
+                    scheduled_count += count
+                elif 'transferred' in status_str:
+                    transferred_count += count
+            
+            stats["connected_calls_summary"] = {
+                "total_connected_calls": total_connected,
+                "call_not_picked_up": len(df_filtered) - total_connected,
+                "scheduled": {
+                    "count": scheduled_count,
+                    "percentage": round((scheduled_count / total_connected) * 100, 2)
+                },
+                "transferred": {
+                    "count": transferred_count,
+                    "percentage": round((transferred_count / total_connected) * 100, 2)
+                }
+            }
+    
+    return stats
+
+@api_router.get("/data/raw")
+async def get_data_raw():
+    """Get raw data records (for use by other endpoints)"""
+    
+    try:
+        df_filtered = await _fetch_and_process_dataframe()
+    except Exception as e:
+        return {"error": f"Error fetching data: {str(e)}"}
+    
+    # Handle NaN values for JSON serialization
+    df_for_json = df_filtered.fillna("")  # Replace NaN with empty string
+    
+    return {
+        "data": df_for_json.to_dict('records'),
+        "shape": df_filtered.shape,
+        "columns": df_filtered.columns.tolist()
     }
 
 @api_router.get("/data/csv")
 async def get_data_csv():
     """Get data as CSV download"""
     
-    # Get the flattened data (reuse the logic from get_data)
-    limit = 3000
-    completed_start_date = datetime.now(eastern_tz) - timedelta(days=7)
-    completed_end_date = datetime.now(eastern_tz)
-
-    params = {
-        "limit": limit,
-        "completed_start_date": completed_start_date,
-        "completed_end_date": completed_end_date,
-        "use_case_id": "01978ea3-2dc9-7598-8c98-3ceb357e0020"
-    }
-
-    url = "https://platform.happyrobot.ai/api/v1/runs"
-    headers = {
-        "authorization": f"Bearer {os.getenv("API-KEY")}",
-        "x-organization-id": os.getenv("X-ORGANIZATION-ID")
-    }
-
-    response = requests.get(url, headers=headers, params=params)
-    
-    if response.status_code != 200:
-        return {"error": f"API request failed with status {response.status_code}"}
-    
-    data = response.json()
-    
-    # Flatten the data
-    flattened_data = []
-    for record in data:
-        flat_record = {
-            'id': record.get('id'),
-            'status': record.get('status'),
-            'org_id': record.get('org_id'),
-            'timestamp': record.get('timestamp'),
-            'use_case_id': record.get('use_case_id'),
-            'version_id': record.get('version_id'),
-            'annotation': record.get('annotation'),
-            'completed_at': record.get('completed_at')
-        }
-        
-        if 'data' in record and record['data']:
-            for key, value in record['data'].items():
-                clean_key = key.replace('.', '_').replace('-', '_')
-                flat_record[clean_key] = value
-        
-        flattened_data.append(flat_record)
-    
-    # Create DataFrame and filter to last 7 days
-    df = pd.DataFrame(flattened_data)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df['completed_at'] = pd.to_datetime(df['completed_at'])
-    
-    # Filter to only include data from the last 7 days
-    cutoff_date = datetime.now(eastern_tz) - timedelta(days=7)
-    df_filtered = df[df['completed_at'] >= cutoff_date]
+    # Get the flattened data using the helper function
+    try:
+        df_filtered = await _fetch_and_process_dataframe()
+    except Exception as e:
+        return {"error": f"Error fetching data: {str(e)}"}
     
     # Create CSV in memory using filtered data
     csv_buffer = io.StringIO()
@@ -287,12 +359,12 @@ async def get_calls_per_week():
     print("🔍 Getting calls per week metrics...")
     
     # Get the flattened data
-    data_response = await get_data()
-    if "error" in data_response:
-        print(f"❌ Error getting data: {data_response}")
-        return data_response
-    
-    df = pd.DataFrame(data_response["data"])
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        error_msg = f"Error fetching data: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
     print(f"📊 DataFrame shape: {df.shape}")
     print(f"📅 Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
     
@@ -329,12 +401,12 @@ async def get_scheduling_status():
     print("🔍 Getting scheduling status metrics...")
     
     # Get the flattened data
-    data_response = await get_data()
-    if "error" in data_response:
-        print(f"❌ Error getting data: {data_response}")
-        return data_response
-    
-    df = pd.DataFrame(data_response["data"])
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        error_msg = f"Error fetching data: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific scheduling status column
@@ -393,11 +465,10 @@ async def get_scheduling_status_connected():
     """Get scheduling status breakdown for calls that were NOT 'call_not_picked_up'"""
     
     # Get the flattened data
-    data_response = await get_data()
-    if "error" in data_response:
-        return data_response
-    
-    df = pd.DataFrame(data_response["data"])
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        return {"error": f"Error fetching data: {str(e)}"}
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific call end stage column
@@ -462,11 +533,10 @@ async def get_exceptions_by_company():
     """Get count of calls with 'exception' scheduling status grouped by company name"""
     
     # Get the flattened data
-    data_response = await get_data()
-    if "error" in data_response:
-        return data_response
-    
-    df = pd.DataFrame(data_response["data"])
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        return {"error": f"Error fetching data: {str(e)}"}
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific scheduling status column
@@ -512,12 +582,12 @@ async def get_call_end_stage_breakdown():
     print("🔍 Getting call end stage breakdown...")
     
     # Get the flattened data
-    data_response = await get_data()
-    if "error" in data_response:
-        print(f"❌ Error getting data: {data_response}")
-        return data_response
-    
-    df = pd.DataFrame(data_response["data"])
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        error_msg = f"Error fetching data: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific call end stage column
@@ -560,6 +630,78 @@ async def get_call_end_stage_breakdown():
     
     print(f"✅ Call end stage breakdown result: {result}")
     return result
+
+@api_router.get("/columns")
+async def get_column_info():
+    """Get information about expected DataFrame columns without making API calls"""
+    
+    # These are the expected columns based on the code structure
+    expected_columns = [
+        "id",
+        "status", 
+        "org_id",
+        "timestamp",
+        "use_case_id",
+        "version_id",
+        "annotation",
+        "completed_at",
+        "0199978b_1596_7369_b3cd_0d14190e9e93_response_classification",  # scheduling status
+        "0198e897_dff8_7049_822d_f10cbc15acb6_response_classification",  # call end stage
+        "01987da1_cab7_777e_932b_9d36e1e5cf8a_company_name"  # company name
+    ]
+    
+    print(f"📋 Expected DataFrame columns ({len(expected_columns)} total):")
+    for i, col in enumerate(expected_columns, 1):
+        print(f"  {i:2d}. {col}")
+    
+    return {
+        "message": "Expected DataFrame columns",
+        "total_columns": len(expected_columns),
+        "columns": expected_columns,
+        "note": "Additional columns may be present from the 'data' field in API response"
+    }
+
+@api_router.get("/sample-data/{column_name}")
+async def get_sample_column_data(column_name: str):
+    """Get sample values from a specific column"""
+    
+    print(f"🔍 Getting sample data for column: {column_name}")
+    
+    # Get the flattened data
+    try:
+        df = await _fetch_and_process_dataframe()
+    except Exception as e:
+        error_msg = f"Error fetching data: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error": error_msg}
+    print(f"📊 DataFrame shape: {df.shape}")
+    
+    if column_name not in df.columns:
+        print(f"❌ Column not found: {column_name}")
+        print(f"Available columns: {df.columns.tolist()}")
+        return {"error": f"Column not found: {column_name}"}
+    
+    # Get sample values (non-null, non-empty)
+    column_data = df[column_name].dropna()
+    column_data = column_data[column_data != ""]
+    
+    # Get unique values and their counts
+    unique_values = column_data.value_counts().head(20)  # Top 20 most common values
+    
+    print(f"📋 Sample values from '{column_name}':")
+    print(f"   Total non-null values: {len(column_data)}")
+    print(f"   Unique values: {len(column_data.unique())}")
+    print(f"   Top values:")
+    for i, (value, count) in enumerate(unique_values.items(), 1):
+        print(f"     {i:2d}. '{value}' (appears {count} times)")
+    
+    return {
+        "column_name": column_name,
+        "total_non_null_values": len(column_data),
+        "unique_values_count": len(column_data.unique()),
+        "sample_values": unique_values.to_dict(),
+        "all_unique_values": column_data.unique().tolist()[:50]  # First 50 unique values
+    }
 
 @api_router.get("/metrics/summary")
 async def get_all_metrics():
