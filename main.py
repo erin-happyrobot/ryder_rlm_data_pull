@@ -132,7 +132,7 @@ async def _fetch_and_process_dataframe():
         "limit": limit,
         "completed_start_date": completed_start_date,
         "completed_end_date": completed_end_date,
-        "use_case_id": "01978ea3-2dc9-7598-8c98-3ceb357e0020"
+        "use_case_id": os.getenv("USE-CASE-ID")
     }
 
     url = "https://platform.happyrobot.ai/api/v1/runs"
