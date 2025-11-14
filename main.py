@@ -365,6 +365,12 @@ async def get_calls_per_week():
         error_msg = f"Error fetching data: {str(e)}"
         print(f"❌ {error_msg}")
         return {"error": error_msg}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     print(f"📅 Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
     
@@ -407,6 +413,12 @@ async def get_scheduling_status():
         error_msg = f"Error fetching data: {str(e)}"
         print(f"❌ {error_msg}")
         return {"error": error_msg}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific scheduling status column
@@ -469,6 +481,12 @@ async def get_scheduling_status_connected():
         df = await _fetch_and_process_dataframe()
     except Exception as e:
         return {"error": f"Error fetching data: {str(e)}"}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific call end stage column
@@ -537,6 +555,12 @@ async def get_exceptions_by_company():
         df = await _fetch_and_process_dataframe()
     except Exception as e:
         return {"error": f"Error fetching data: {str(e)}"}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific scheduling status column
@@ -588,6 +612,12 @@ async def get_call_end_stage_breakdown():
         error_msg = f"Error fetching data: {str(e)}"
         print(f"❌ {error_msg}")
         return {"error": error_msg}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     
     # Use the specific call end stage column
@@ -674,6 +704,12 @@ async def get_sample_column_data(column_name: str):
         error_msg = f"Error fetching data: {str(e)}"
         print(f"❌ {error_msg}")
         return {"error": error_msg}
+    
+    # Check if we got an error dict instead of a DataFrame
+    if isinstance(df, dict) and "error" in df:
+        print(f"❌ Error from data fetch: {df['error']}")
+        return df
+    
     print(f"📊 DataFrame shape: {df.shape}")
     
     if column_name not in df.columns:
